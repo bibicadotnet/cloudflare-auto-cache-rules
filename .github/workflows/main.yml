@@ -3,10 +3,10 @@ name: Update latest branch
 on:
   release:
     types: [published]
-  workflow_dispatch:  # 👈 Thêm dòng này để có nút chạy thủ công
+  workflow_dispatch:
 
 permissions:
-  contents: write  # 👈 Thêm quyền ghi để cập nhật branch
+  contents: write
 
 jobs:
   update-latest:
