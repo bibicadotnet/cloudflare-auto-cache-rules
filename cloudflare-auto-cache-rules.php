@@ -1,8 +1,8 @@
-<?
+<?php
 /**
  * Plugin Name: Cloudflare Auto Cache Rules
  * Description: Tự động cấu hình Cache Rules trên Cloudflare cho WordPress
- * Version: 1.1
+ * Version: 1.2
  * Author: bibica
  * Author URI: https://bibica.net
  * Plugin URI: https://bibica.net/cloudflare-auto-cache-rules
@@ -67,23 +67,23 @@ function accr_admin_page() {
         check_admin_referer('accr_create_cache_rule');
         
         // Kiểm tra và tắt Page Rule có Cache Level: Cache Everything
-        $api_token = get_option('accr_cloudflare_api_token');
-        $email = get_option('accr_cloudflare_email');
-        $zone_id = get_option('accr_cloudflare_zone_id');
+    $api_token = get_option('accr_cloudflare_api_token');
+    $email = get_option('accr_cloudflare_email');
+    $zone_id = get_option('accr_cloudflare_zone_id');
 
-        if (empty($api_token) || empty($email) || empty($zone_id)) {
-            echo '<div class="notice notice-error"><p>Thiếu thông tin cấu hình. Vui lòng kiểm tra lại.</p></div>';
-            return;
-        }
+    if (empty($api_token) || empty($email) || empty($zone_id)) {
+        echo '<div class="notice notice-error"><p>Thiếu thông tin cấu hình. Vui lòng kiểm tra lại.</p></div>';
+        return;
+    }
 
-        $page_rule_disabled = accr_disable_cache_everything_page_rule($api_token, $email, $zone_id);
-        if ($page_rule_disabled === true) {
-            echo '<div class="notice notice-warning"><p>Phát hiện Page Rule có Cache Level: Cache Everything. Đã tắt tính năng này.</p></div>';
-        } elseif ($page_rule_disabled === false) {
-            echo '<div class="notice notice-error"><p>Lỗi khi tắt Page Rule có Cache Level: Cache Everything.</p></div>';
-            return;
-        }
-
+    $page_rule_disabled = accr_disable_cache_everything_page_rule($api_token, $email, $zone_id);
+    if ($page_rule_disabled === true) {
+        echo '<div class="notice notice-warning"><p>Phát hiện Page Rule có Cache Level: Cache Everything. Đã tắt tính năng này.</p></div>';
+    } elseif ($page_rule_disabled === false) {
+        // Không hiển thị thông báo nếu không tìm thấy Page Rule
+        // Hoặc hiển thị thông báo khác nếu cần
+     #   echo '<div class="notice notice-info"><p>Không tìm thấy Page Rule có Cache Level: Cache Everything đang hoạt động.</p></div>';
+    }
         // Tiếp tục tạo Cache Rule mới
         $result = accr_create_cache_rule();
         if ($result === true) {
@@ -217,17 +217,27 @@ function accr_validate_cloudflare_credentials($api_token, $email, $zone_id) {
         return 'Thông tin cấu hình không hợp lệ. Vui lòng kiểm tra lại.';
     }
 
-    // Lấy domain từ API và so sánh với domain hiện tại
-    $api_domain = $body['result']['name'] ?? '';
+    // Lấy zone domain từ API
+    $zone_domain = $body['result']['name'] ?? '';
+    
+    // Lấy current domain từ WordPress
     $current_domain = parse_url(home_url(), PHP_URL_HOST);
 
-    if ($api_domain !== $current_domain) {
-        return 'Zone ID không khớp với domain hiện tại. Vui lòng kiểm tra lại.';
+    // Kiểm tra xem current domain có phải là subdomain của zone domain không
+    if (!empty($zone_domain) && !empty($current_domain)) {
+        // Chuyển đổi domain thành lowercase để so sánh
+        $zone_domain = strtolower($zone_domain);
+        $current_domain = strtolower($current_domain);
+
+        // Kiểm tra nếu domain hiện tại là domain chính hoặc subdomain của zone
+        if ($current_domain === $zone_domain || 
+            preg_match('/' . preg_quote($zone_domain, '/') . '$/', $current_domain)) {
+            return true;
+        }
     }
 
-    return true;
+    return 'Zone ID không khớp với domain hiện tại hoặc không phải là subdomain hợp lệ. Vui lòng kiểm tra lại.';
 }
-
 // Lấy Account ID từ API dựa trên Zone ID
 function accr_get_account_id($api_token, $email, $zone_id) {
     // Đầu tiên lấy thông tin của zone để có account_id
@@ -287,48 +297,56 @@ function accr_disable_cache_everything_page_rule($api_token, $email, $zone_id) {
         return false;
     }
 
+    $page_rules = $body['result'] ?? [];
+    $cache_everything_rule_found = false;
+
     // Duyệt qua các Page Rules
-    foreach ($body['result'] as $page_rule) {
+    foreach ($page_rules as $page_rule) {
         $actions = $page_rule['actions'] ?? [];
         foreach ($actions as $action) {
             if ($action['id'] === 'cache_level' && $action['value'] === 'cache_everything') {
-                // Tắt Page Rule này bằng cách đặt status thành "disabled"
-                $page_rule_id = $page_rule['id'];
-                $disable_url = "https://api.cloudflare.com/client/v4/zones/{$zone_id}/pagerules/{$page_rule_id}";
+                $cache_everything_rule_found = true;
+                
+                // Chỉ xử lý khi rule đang được bật (status = 'active')
+                if ($page_rule['status'] === 'active') {
+                    // Tắt Page Rule này bằng cách đặt status thành "disabled"
+                    $page_rule_id = $page_rule['id'];
+                    $disable_url = "https://api.cloudflare.com/client/v4/zones/{$zone_id}/pagerules/{$page_rule_id}";
 
-                $disable_data = [
-                    'status' => 'disabled',
-                ];
+                    $disable_data = [
+                        'status' => 'disabled',
+                    ];
 
-                $disable_response = wp_remote_request($disable_url, [
-                    'method' => 'PATCH',
-                    'headers' => [
-                        'X-Auth-Email' => $email,
-                        'X-Auth-Key' => $api_token,
-                        'Content-Type' => 'application/json',
-                    ],
-                    'body' => json_encode($disable_data),
-                ]);
+                    $disable_response = wp_remote_request($disable_url, [
+                        'method' => 'PATCH',
+                        'headers' => [
+                            'X-Auth-Email' => $email,
+                            'X-Auth-Key' => $api_token,
+                            'Content-Type' => 'application/json',
+                        ],
+                        'body' => json_encode($disable_data),
+                    ]);
 
-                if (is_wp_error($disable_response)) {
-                    error_log('ACCR: Lỗi khi tắt Page Rule - ' . $disable_response->get_error_message());
-                    return false;
+                    if (is_wp_error($disable_response)) {
+                        error_log('ACCR: Lỗi khi tắt Page Rule - ' . $disable_response->get_error_message());
+                        return false;
+                    }
+
+                    $disable_body = json_decode(wp_remote_retrieve_body($disable_response), true);
+                    if (!($disable_body['success'] ?? false)) {
+                        error_log('ACCR: Không thể tắt Page Rule');
+                        return false;
+                    }
+
+                    error_log('ACCR: Đã tắt Page Rule có Cache Level: Cache Everything');
+                    return true;
                 }
-
-                $disable_body = json_decode(wp_remote_retrieve_body($disable_response), true);
-                if (!($disable_body['success'] ?? false)) {
-                    error_log('ACCR: Không thể tắt Page Rule');
-                    return false;
-                }
-
-                error_log('ACCR: Đã tắt Page Rule có Cache Level: Cache Everything');
-                return true;
             }
         }
     }
 
-    error_log('ACCR: Không tìm thấy Page Rule có Cache Level: Cache Everything');
-    return true;
+    // Không cần thông báo nếu không tìm thấy rule Cache Everything
+    return false;
 }
 
 // Tạo Cache Rule
@@ -342,11 +360,12 @@ function accr_create_cache_rule() {
         return false;
     }
 
-    // Kiểm tra và tắt Page Rule có Cache Level: Cache Everything
-    if (!accr_disable_cache_everything_page_rule($api_token, $email, $zone_id)) {
-        error_log('ACCR: Không thể tắt Page Rule có Cache Level: Cache Everything');
-        return false;
-    }
+	// Kiểm tra và tắt Page Rule có Cache Level: Cache Everything nếu có
+	$page_rule_disabled = accr_disable_cache_everything_page_rule($api_token, $email, $zone_id);
+	if ($page_rule_disabled) {
+		// Chỉ hiển thị thông báo khi thực sự đã tắt một rule
+		echo '<div class="notice notice-warning"><p>Phát hiện Page Rule có Cache Level: Cache Everything. Đã tắt tính năng này.</p></div>';
+	}
 
     // Tiếp tục tạo Cache Rule mới
     error_log('ACCR: Bắt đầu tạo cache rule');
@@ -460,7 +479,8 @@ function accr_create_cache_rule() {
     $existing_rules = $ruleset_body['result']['rules'] ?? [];
 
     // Kiểm tra xem rule đã tồn tại chưa
-    $rule_description = 'Cache tất cả trừ các trang WordPress động';
+	$current_domain = parse_url(home_url(), PHP_URL_HOST);
+	$rule_description = "WordPress Cache Rule - {$current_domain}";
     $rule_exists = false;
     $rule_id = null;
 
@@ -480,47 +500,47 @@ function accr_create_cache_rule() {
     }
 
     // Các pattern loại trừ cho WordPress
-$exclude_patterns = [
-    'starts_with(http.request.uri.path, "/wp-admin")',
-    'starts_with(http.request.uri.path, "/wp-login")',
-    'starts_with(http.request.uri.path, "/wp-json/")',
-    'starts_with(http.request.uri.path, "/wc-api/")',
-    'starts_with(http.request.uri.path, "/edd-api/")',
-    'starts_with(http.request.uri.path, "/mepr/")',
-    'http.request.uri.path contains "/register/"',
-    'http.request.uri.path contains "/dashboard/"',
-    'http.request.uri.path contains "/members-area/"',
-    'http.request.uri.path contains "/wishlist-member/"',
-    'http.request.uri.path contains "phs_downloads-mbr"',
-    'http.request.uri.path contains "/checkout/"',
-    'http.request.uri.path contains ".xsl"',
-    'http.request.uri.path contains ".xml"',
-    'http.request.uri.path contains ".php"',
-    'starts_with(http.request.uri.query, "s=")',
-    'starts_with(http.request.uri.query, "p=")',
-    'http.request.uri.query contains "nocache"',
-    'http.request.uri.query contains "nowprocket"',
-    'http.cookie contains "wordpress_logged_in_"',
-    'http.cookie contains "comment_"',
-    'http.cookie contains "woocommerce_"',
-    'http.cookie contains "wordpressuser_"',
-    'http.cookie contains "wordpresspass_"',
-    'http.cookie contains "wordpress_sec_"',
-    'http.cookie contains "yith_wcwl_products"',
-    'http.cookie contains "edd_items_in_cart"',
-    'http.cookie contains "it_exchange_session_"',
-    'http.cookie contains "comment_author"',
-    'http.cookie contains "dshack_level"',
-    'http.cookie contains "auth_"',
-    'http.cookie contains "noaffiliate_"',
-    'http.cookie contains "mp_session"',
-    'http.cookie contains "xf_"',
-    'http.cookie contains "mp_globalcart_"',
-    'http.cookie contains "wp-resetpass-"',
-    'http.cookie contains "upsell_customer"',
-    'http.cookie contains "wlmapi"',
-    'http.cookie contains "wishlist_reg"'
-];
+    $exclude_patterns = [
+        'starts_with(http.request.uri.path, "/wp-admin")',
+        'starts_with(http.request.uri.path, "/wp-login")',
+        'starts_with(http.request.uri.path, "/wp-json/")',
+        'starts_with(http.request.uri.path, "/wc-api/")',
+        'starts_with(http.request.uri.path, "/edd-api/")',
+        'starts_with(http.request.uri.path, "/mepr/")',
+        'http.request.uri.path contains "/register/"',
+        'http.request.uri.path contains "/dashboard/"',
+        'http.request.uri.path contains "/members-area/"',
+        'http.request.uri.path contains "/wishlist-member/"',
+        'http.request.uri.path contains "phs_downloads-mbr"',
+        'http.request.uri.path contains "/checkout/"',
+        'http.request.uri.path contains ".xsl"',
+        'http.request.uri.path contains ".xml"',
+        'http.request.uri.path contains ".php"',
+        'starts_with(http.request.uri.query, "s=")',
+        'starts_with(http.request.uri.query, "p=")',
+        'http.request.uri.query contains "nocache"',
+        'http.request.uri.query contains "nowprocket"',
+        'http.cookie contains "wordpress_logged_in_"',
+        'http.cookie contains "comment_"',
+        'http.cookie contains "woocommerce_"',
+        'http.cookie contains "wordpressuser_"',
+        'http.cookie contains "wordpresspass_"',
+        'http.cookie contains "wordpress_sec_"',
+        'http.cookie contains "yith_wcwl_products"',
+        'http.cookie contains "edd_items_in_cart"',
+        'http.cookie contains "it_exchange_session_"',
+        'http.cookie contains "comment_author"',
+        'http.cookie contains "dshack_level"',
+        'http.cookie contains "auth_"',
+        'http.cookie contains "noaffiliate_"',
+        'http.cookie contains "mp_session"',
+        'http.cookie contains "xf_"',
+        'http.cookie contains "mp_globalcart_"',
+        'http.cookie contains "wp-resetpass-"',
+        'http.cookie contains "upsell_customer"',
+        'http.cookie contains "wlmapi"',
+        'http.cookie contains "wishlist_reg"'
+    ];
 
     // Kết hợp các điều kiện loại trừ
     $exclusion_expression = implode(' and not ', $exclude_patterns);
@@ -587,21 +607,40 @@ $exclude_patterns = [
         return false;
     }
 
-// Sau khi tạo rule thành công, lưu URL vào database
-$rule_id = $body['result']['rules'][count($body['result']['rules']) - 1]['id'] ?? null;
+    // Sau khi tạo rule thành công, lưu URL vào database
+    $rule_id = $body['result']['rules'][count($body['result']['rules']) - 1]['id'] ?? null;
 if ($rule_id) {
     // Lấy Account ID
-	$account_id = accr_get_account_id($api_token, $email, $zone_id);
+    $account_id = accr_get_account_id($api_token, $email, $zone_id);
     if (!$account_id) {
         error_log('ACCR: Không thể lấy Account ID');
         return false;
     }
 
-    // Tạo URL với Account ID
-    $current_domain = parse_url(home_url(), PHP_URL_HOST);
-    $cloudflare_dashboard_url = "https://dash.cloudflare.com/{$account_id}/{$current_domain}/caching/cache-rules/{$rule_id}";
-    update_option('accr_cloudflare_rule_url', $cloudflare_dashboard_url);
-    error_log('ACCR: URL trực tiếp đến rule: ' . $cloudflare_dashboard_url);
+    // Lấy zone domain từ API Cloudflare thay vì dùng current domain
+    $zone_url = "https://api.cloudflare.com/client/v4/zones/{$zone_id}";
+    $zone_response = wp_remote_get($zone_url, [
+        'headers' => [
+            'X-Auth-Email' => $email,
+            'X-Auth-Key' => $api_token,
+            'Content-Type' => 'application/json'
+        ]
+    ]);
+
+    if (!is_wp_error($zone_response)) {
+        $zone_body = json_decode(wp_remote_retrieve_body($zone_response), true);
+        if (($zone_body['success'] ?? false) && !empty($zone_body['result']['name'])) {
+            $zone_domain = $zone_body['result']['name'];
+            // Tạo URL với zone domain thay vì current domain
+            $cloudflare_dashboard_url = "https://dash.cloudflare.com/{$account_id}/{$zone_domain}/caching/cache-rules/{$rule_id}";
+            update_option('accr_cloudflare_rule_url', $cloudflare_dashboard_url);
+            error_log('ACCR: URL trực tiếp đến rule: ' . $cloudflare_dashboard_url);
+        } else {
+            error_log('ACCR: Không thể lấy zone domain từ API');
+        }
+    } else {
+        error_log('ACCR: Lỗi khi lấy zone domain - ' . $zone_response->get_error_message());
+    }
 } else {
     error_log('ACCR: Không thể lấy rule_id từ phản hồi API');
 }
@@ -690,7 +729,8 @@ function accr_delete_cache_rule() {
     $existing_rules = $ruleset_body['result']['rules'] ?? [];
 
     // Tìm và xóa rule được tạo bởi plugin
-    $rule_description = 'Cache tất cả trừ các trang WordPress động';
+	$current_domain = parse_url(home_url(), PHP_URL_HOST);
+	$rule_description = "WordPress Cache Rule - {$current_domain}";
     $updated_rules = array_filter($existing_rules, function($rule) use ($rule_description) {
         return $rule['description'] !== $rule_description;
     });
