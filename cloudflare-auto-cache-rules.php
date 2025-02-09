@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Cloudflare Auto Cache Rules
  * Description: Tự động cấu hình Cache Rules trên Cloudflare cho WordPress
- * Version: 1.0
+ * Version: 1.1
  * Author: bibica
  * Author URI: https://bibica.net
  * Plugin URI: https://bibica.net/cloudflare-auto-cache-rules
@@ -13,6 +13,14 @@
 
 if (!defined('ABSPATH')) {
     exit;
+}
+
+add_filter('plugin_action_links_' . plugin_basename(__FILE__), 'accr_add_settings_link');
+
+function accr_add_settings_link($links) {
+    $settings_link = '<a href="tools.php?page=cloudflare-auto-cache-rules">' . __('Settings') . '</a>';
+    array_unshift($links, $settings_link);
+    return $links;
 }
 
 // Thêm menu vào Tools
