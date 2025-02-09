@@ -1,0 +1,20 @@
+name: Update latest branch
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  update-latest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Update latest branch
+        run: |
+          git checkout latest || git checkout -b latest
+          git merge $(git describe --tags `git rev-list --tags --max-count=1`)
+          git push origin latest
